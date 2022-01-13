@@ -1,40 +1,78 @@
-version: 2
-
+version: 2.1
+orbs:
+  aws-s3: circleci/aws-s3@3.0
+defaults: &defaults
+  working_directory: ~/aws-rough
+  docker:
+    - image: cimg/python:3.9.6-browsers
+filter_only_main: &filter_only_main
+  filters:
+    branches:
+      only: main
 jobs:
-  ci:
-    docker:
-      - image: cimg/node:lts
+  install:
+    <<: *defaults
     steps:
       - checkout
-
       - restore_cache:
+          name: Restore Yarn Package Cache
           keys:
-            - yarn-v1-{{ checksum "yarn.lock" }}
-
-      - run:
-          name: Install dependencies
-          command: yarn --frozen-lockfile --cache-folder ~/.cache/yarn
-
+            - yarn-packages-{{ checksum "yarn.lock" }}
+      - run: yarn install
       - save_cache:
-          key: yarn-v1-{{ checksum "yarn.lock" }}
+          name: Save Yarn Package Cache
+          key: yarn-packages-{{ checksum "yarn.lock" }}
           paths:
             - ~/.cache/yarn
+      - persist_to_workspace:
+          root: ~/aws-rough
+          paths:
+            - ./*
+  test:
+    <<: *defaults
+    steps:
+      - attach_workspace:
+          at: ~/aws-rough
+      - run: yarn test
 
-      - run:
-          name: Run linter
-          command: yarn lint
+  build:
+    <<: *defaults
+    steps:
+      - attach_workspace:
+          at: ~/aws-rough
+      - run: yarn generate
+      - persist_to_workspace:
+          root: ~/aws-rough
+          paths:
+            - dist
 
-      - run:
-          name: Run tests
-          command: yarn test
+  deploy:
+    <<: *defaults
+    steps:
+      - attach_workspace:
+          at: ~/aws-rough
+      - aws-s3/sync:
+          arguments: |
+            --cache-control "max-age=86400"
+          from: ./dist/
+          to: 's3://${BACKET_NAME}'
 
 workflows:
   version: 2
-  ci:
+  test-deploy:
     jobs:
-      - ci:
-          filters:
-            branches:
-              only:
-                - main
-                - master
+      - install
+      - test:
+          requires:
+            - install
+      - build:
+          <<: *filter_only_main
+          requires:
+            - install
+            - test
+      - deploy:
+          <<: *filter_only_main
+          requires:
+            - install
+            - test
+            - build
